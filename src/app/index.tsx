@@ -137,6 +137,8 @@ export default function Home() {
         <T variant="muted">5. Wer zu lange stillsteht oder das Gebiet verlässt, wird für den Jäger sichtbar.</T>
         <T variant="muted">6. Gefangen ist, wessen Agenten-ID der Jäger scannt.</T>
       </Card>
+
+      <Button title="Datenschutz und Impressum" kind="ghost" onPress={() => router.push('/legal')} />
     </Screen>
   );
 }

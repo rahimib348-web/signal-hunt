@@ -30,6 +30,13 @@ Das vollständige Spielkonzept steht im Konzept-Dokument (Claude Docs).
 - Radar-Animation auf dem gesperrten Jäger-Bildschirm, Decknamen würfeln
 - Auswertung zeigt, wer welche Fähigkeiten eingesetzt, Fake-Pings geschickt und Briefkästen geleert hat
 
+## Datenschutz und Rechtliches
+
+- Bildschirm „Datenschutz und Impressum“ (Link auf der Startseite) mit Impressum, Datenschutzerklärung und der eigenen anonymen Nutzer-ID. Die Texte stehen in `src/lib/legal-texts.ts`; vor der Veröffentlichung die Platzhalter in `LEGAL_CONTACT` ausfüllen.
+- „Meine Daten löschen“ verlässt laufende Einsätze, gibt den Host ab und löscht das anonyme Konto samt aller Daten.
+- Anonyme Nutzer, die 30 Tage lang nicht gespielt haben, löscht der Server jede Nacht automatisch.
+- Bevor die App nach dem Standort fragt, erklärt ein deutlicher Hinweis, wofür (verlangt Google Play für den Standort im Hintergrund).
+
 ## Aufbau
 
 | Ordner | Inhalt |

@@ -852,3 +852,79 @@ test('Echtzeit: Briefkasten erreicht den Jäger erst nach einer Minute, geleerte
   assert.equal(seen.runnerClaims, 1, 'Agent erfährt, dass der Briefkasten leer ist');
   assert.equal(seen.hunterClaims, 0, 'Jäger erfährt es nie');
 });
+
+// ---------------------------------------------------------------------------
+// Datenschutz: eigene Daten löschen, inaktive anonyme Nutzer entfernen
+// ---------------------------------------------------------------------------
+
+async function userExists(id) {
+  const { rows } = await db.query('select count(*)::int as n from auth.users where id = $1', [id]);
+  return rows[0].n === 1;
+}
+
+test('Meine Daten löschen: Host gibt ab, Runde läuft weiter, eigene Spuren sind weg', async () => {
+  const { host, runners, gameId } = await setupGame({ runners: 3 });
+  const [a, b, c] = runners;
+
+  // Der Host löscht in der Lobby: A wird Host, der Einsatz bleibt.
+  await rpc(host, 'delete_my_data', {});
+  assert.equal(await userExists(host.id), false, 'Anonymes Konto ist gelöscht');
+  const { data: g } = await a.client.from('games').select('host_id, status').eq('id', gameId).single();
+  assert.deepEqual(g, { host_id: a.id, status: 'lobby' });
+  const { data: left } = await a.client.from('players').select('user_id').eq('game_id', gameId);
+  assert.deepEqual(new Set(left.map((p) => p.user_id)), new Set([a.id, b.id, c.id]));
+
+  // Neue Runde mit A als Jäger.
+  await rpc(a, 'set_role', { p_game: gameId, p_user: a.id, p_role: 'hunter' });
+  await rpc(a, 'start_game', { p_game: gameId });
+  await move(a, gameId, CENTER);
+  await move(b, gameId, offset(CENTER.lat, CENTER.lng, 100, 100));
+  await move(c, gameId, offset(CENTER.lat, CENTER.lng, -100, -100));
+  await fastForward(gameId, 301);
+  await rpc(a, 'tick', { p_game: gameId });
+  const { rows: before } = await db.query('select count(*)::int as n from pings where target_id = $1', [b.id]);
+  assert.ok(before[0].n >= 1);
+
+  // B löscht mitten in der Runde: B ist raus, C spielt weiter.
+  await rpc(b, 'delete_my_data', {});
+  assert.equal(await userExists(b.id), false);
+  for (const table of ['pings', 'positions', 'position_history', 'player_abilities', 'player_secrets']) {
+    const column = table === 'pings' ? 'target_id' : 'user_id';
+    const { rows } = await db.query(`select count(*)::int as n from ${table} where ${column} = $1`, [b.id]);
+    assert.equal(rows[0].n, 0, `Keine Reste in ${table}`);
+  }
+  const { rows: ev } = await db.query('select count(*)::int as n from events where actor_id = $1 or target_id = $1', [b.id]);
+  assert.equal(ev[0].n, 0, 'Keine Ereignisse mehr mit B');
+  const { data: still } = await a.client.from('games').select('status').eq('id', gameId).single();
+  assert.equal(still.status, 'hunt', 'Die Runde läuft für die anderen weiter');
+
+  // Der letzte Agent löscht: Die Jäger gewinnen, der Einsatz bleibt für A sichtbar.
+  await rpc(c, 'delete_my_data', {});
+  const { data: ended } = await a.client.from('games').select('status, winner').eq('id', gameId).single();
+  assert.deepEqual(ended, { status: 'ended', winner: 'hunters' });
+});
+
+test('Anonyme Nutzer werden nach 30 Tagen ohne Nutzung gelöscht', async () => {
+  const idle = await player('Lange weg');
+  const fresh = await player('Gerade da');
+  const { host: busy } = await setupGame({ runners: 1 });
+  for (const id of [idle.id, busy.id]) {
+    await db.query(
+      `update auth.users set created_at = now() - interval '40 days', last_sign_in_at = now() - interval '40 days',
+         updated_at = now() - interval '40 days' where id = $1`,
+      [id],
+    );
+    await db.query(
+      `update auth.sessions set created_at = now() - interval '40 days', updated_at = now() - interval '40 days',
+         refreshed_at = (now() - interval '35 days') at time zone 'utc' where user_id = $1`,
+      [id],
+    );
+  }
+  const { rows } = await db.query('select private.cleanup_inactive_users () as n');
+  assert.ok(rows[0].n >= 1);
+  assert.equal(await userExists(idle.id), false, 'Inaktiver Nutzer ist gelöscht');
+  assert.equal(await userExists(fresh.id), true, 'Aktiver Nutzer bleibt');
+  assert.equal(await userExists(busy.id), true, 'Wer in einem Einsatz ist, bleibt');
+  const { rows: jobs } = await db.query(`select jobname from cron.job where jobname = 'signal-hunt-inactive-users'`);
+  assert.equal(jobs.length, 1);
+});

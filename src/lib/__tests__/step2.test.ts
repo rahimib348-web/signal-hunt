@@ -204,3 +204,24 @@ describe('Decknamen', () => {
     for (let i = 0; i < 50; i++) expect(randomCodename()).toMatch(/^[A-Za-zäöü]+-\d{2}$/);
   });
 });
+
+describe('Datenschutz', () => {
+  it('unterscheidet eine gelöschte Anmeldung von fehlendem Netz', async () => {
+    const { isSessionGone } = await import('../errors');
+    expect(isSessionGone({ status: 403, message: 'User from sub claim in JWT does not exist' })).toBe(true);
+    expect(isSessionGone({ status: 401 })).toBe(true);
+    expect(isSessionGone({ status: 0, message: 'Network request failed' })).toBe(false);
+    expect(isSessionGone(new Error('fetch failed'))).toBe(false);
+  });
+
+  it('enthält Impressum und alle Abschnitte der Datenschutzerklärung', async () => {
+    const { IMPRESSUM, PRIVACY, LEGAL_CONTACT, hasPlaceholders } = await import('../legal-texts');
+    expect(IMPRESSUM.blocks.some((b) => b.kind === 'text' && b.text.includes('§ 5'))).toBe(true);
+    expect(PRIVACY.map((s) => s.title.slice(0, 2))).toEqual(['1.', '2.', '3.', '4.', '5.']);
+    const all = JSON.stringify(PRIVACY);
+    expect(all).toContain('30 Tagen');
+    expect(all).toContain('wenn die App geschlossen ist');
+    expect(all).toContain(LEGAL_CONTACT.email);
+    expect(hasPlaceholders()).toBe(true); // bis Name und Adresse eingetragen sind
+  });
+});
