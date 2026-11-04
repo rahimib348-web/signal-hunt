@@ -43,6 +43,12 @@ export function errorMessage(error: unknown): string {
   return `Etwas ist schiefgelaufen (${raw}).`;
 }
 
+/** Die Anmeldung gilt nicht mehr (Konto gelöscht oder Sitzung ungültig), anders als bei fehlendem Netz. */
+export function isSessionGone(error: unknown): boolean {
+  const status = typeof error === 'object' && error !== null && 'status' in error ? (error as { status: unknown }).status : null;
+  return status === 401 || status === 403 || status === 404;
+}
+
 export function errorCode(error: unknown): string | null {
   const raw =
     typeof error === 'object' && error !== null && 'message' in error ? String((error as { message: unknown }).message) : null;

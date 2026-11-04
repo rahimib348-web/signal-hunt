@@ -4,6 +4,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import { AppState, Platform } from 'react-native';
 
+import { isSessionGone } from './errors';
+
 // Unser Supabase-Projekt "signal-hunt1" (Frankfurt). Adresse und Publishable key sind
 // öffentlich: Sie stecken ohnehin in jeder App, die Daten schützen die Zugriffsregeln
 // (RLS) auf dem Server. Der Secret-Key gehört NIEMALS hierher.
@@ -34,8 +36,20 @@ if (Platform.OS !== 'web') {
 /** Meldet das Gerät anonym an (kein Konto nötig) und gibt die Nutzer-ID zurück. */
 export async function ensureSignedIn(): Promise<string> {
   const { data } = await supabase.auth.getSession();
-  if (data.session?.user) return data.session.user.id;
+  if (data.session?.user) {
+    // Gibt es das anonyme Konto noch? Nach 30 Tagen ohne Nutzung oder mit
+    // "Meine Daten löschen" ist es weg. Ohne Netz behalten wir die Sitzung.
+    const { error } = await supabase.auth.getUser();
+    if (!error || !isSessionGone(error)) return data.session.user.id;
+    await supabase.auth.signOut({ scope: 'local' });
+  }
   const { data: signIn, error } = await supabase.auth.signInAnonymously();
   if (error || !signIn.user) throw error ?? new Error('sign_in_failed');
   return signIn.user.id;
+}
+
+/** Die eigene anonyme Nutzer-ID, falls angemeldet (ohne Netzwerk). */
+export async function currentUserId(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.user.id ?? null;
 }

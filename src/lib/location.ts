@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
+import { Alert } from 'react-native';
 
 import { api, type PositionResult } from './api';
 import type { LatLng } from './types';
@@ -69,7 +70,40 @@ export function onPositionSent(listener: Listener): () => void {
   };
 }
 
+// Deutlicher Hinweis, bevor das Handy nach dem Standort fragt (verlangt Google Play
+// für den Hintergrund-Standort, ist aber auch sonst fair).
+const DISCLOSURE = {
+  foreground:
+    'Signal Hunt nutzt deinen Standort, um das Einsatzgebiet um dich herum vorzuschlagen und während einer Runde Pings, Spielfeldgrenze und Fangen zu berechnen. Wer deinen Standort sieht, steht unter „Datenschutz und Impressum“.',
+  background:
+    'Signal Hunt sammelt während einer laufenden Runde deinen Standort, auch wenn die App geschlossen ist oder nicht verwendet wird. So funktionieren Pings, Spielfeldgrenze und Fangen, während dein Handy in der Tasche steckt. Nach der Runde nicht mehr. Wer deinen Standort sieht, steht unter „Datenschutz und Impressum“.',
+} as const;
+
+let openDisclosure: Promise<boolean> | null = null;
+
+function showDisclosure(kind: keyof typeof DISCLOSURE): Promise<boolean> {
+  if (openDisclosure) return openDisclosure;
+  openDisclosure = new Promise<boolean>((resolve) => {
+    Alert.alert(
+      'Dein Standort im Spiel',
+      DISCLOSURE[kind],
+      [
+        { text: 'Nicht jetzt', style: 'cancel', onPress: () => resolve(false) },
+        { text: 'Weiter', onPress: () => resolve(true) },
+      ],
+      { cancelable: false },
+    );
+  }).finally(() => {
+    openDisclosure = null;
+  });
+  return openDisclosure;
+}
+
 export async function requestForegroundPermission(): Promise<boolean> {
+  const current = await Location.getForegroundPermissionsAsync();
+  if (current.granted) return true;
+  if (!current.canAskAgain) return false;
+  if (!(await showDisclosure('foreground'))) return false;
   const { status } = await Location.requestForegroundPermissionsAsync();
   return status === 'granted';
 }
@@ -99,11 +133,36 @@ async function startForeground(gameId: string) {
 export async function startTracking(gameId: string, wantBackground: boolean): Promise<TrackingMode> {
   activeGameId = gameId;
   await AsyncStorage.setItem(GAME_KEY, gameId);
-  if (!(await requestForegroundPermission())) return 'off';
+
+  // Ein Hinweis vor allen Abfragen, nicht zwei hintereinander.
+  const fg = await Location.getForegroundPermissionsAsync();
+  let bgGranted = false;
+  let mayAskBackground = false;
+  if (wantBackground) {
+    try {
+      const bg = await Location.getBackgroundPermissionsAsync();
+      bgGranted = bg.granted;
+      mayAskBackground = !bg.granted && bg.canAskAgain;
+    } catch {
+      // Hintergrund nicht verfügbar (z. B. Expo Go): nur Vordergrund.
+    }
+  }
+  if (!fg.granted && !fg.canAskAgain) return 'off';
+  if (!fg.granted || mayAskBackground) {
+    const ok = await showDisclosure(wantBackground ? 'background' : 'foreground');
+    if (!ok) {
+      if (!fg.granted) return 'off';
+      mayAskBackground = false;
+    }
+  }
+  if (!fg.granted) {
+    const res = await Location.requestForegroundPermissionsAsync();
+    if (res.status !== 'granted') return 'off';
+  }
 
   if (wantBackground) {
     try {
-      const bg = await Location.requestBackgroundPermissionsAsync();
+      const bg = bgGranted || !mayAskBackground ? { status: bgGranted ? 'granted' : 'denied' } : await Location.requestBackgroundPermissionsAsync();
       if (bg.status === 'granted' && (await TaskManager.isAvailableAsync())) {
         await Location.startLocationUpdatesAsync(TASK_NAME, {
           accuracy: Location.Accuracy.High,

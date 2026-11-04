@@ -66,6 +66,7 @@ export const api = {
     call<void>('update_extras', { p_game: gameId, p_abilities: abilities, p_checkpoints: checkpoints }),
   setCheckpointSpots: (gameId: string, points: LatLng[]) =>
     call<{ spots: number }>('set_checkpoint_spots', { p_game: gameId, p_points: points }),
+  deleteMyData: () => call<void>('delete_my_data', {}),
   activateAbility: (gameId: string, ability: AbilityId) =>
     call<AbilityResult>('use_ability', { p_game: gameId, p_ability: ability }),
 };
