@@ -22,6 +22,7 @@ import {
   type Region,
 } from '@/lib/geo';
 import { getCurrentPosition, requestForegroundPermission } from '@/lib/location';
+import { fetchCheckpointSpots, OSM_ATTRIBUTION } from '@/lib/osm';
 import { colors, radius, space } from '@/lib/theme';
 import type { LatLng } from '@/lib/types';
 
@@ -34,7 +35,7 @@ export default function AreaEditor() {
   const [points, setPoints] = useState<LatLng[] | null>(null);
   const [me, setMe] = useState<LatLng | null>(null);
   const [initialRegion, setInitialRegion] = useState<Region | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
 
   const game = data.game;
 
@@ -92,15 +93,27 @@ export default function AreaEditor() {
   };
 
   const save = async () => {
-    setSaving(true);
+    setSaving('Speichere Gebiet …');
     try {
       await api.setArea(game.id, points);
-      router.back();
     } catch (e) {
       Alert.alert('Gebiet nicht gespeichert', errorMessage(e));
-    } finally {
-      setSaving(false);
+      setSaving(null);
+      return;
     }
+    // Sichere Orte für tote Briefkästen suchen. Klappt das nicht, geht es trotzdem weiter:
+    // In der Lobby kann der Host es erneut versuchen.
+    if (game.checkpoints_enabled) {
+      setSaving('Suche sichere Orte für tote Briefkästen …');
+      try {
+        const spots = await fetchCheckpointSpots(points);
+        await api.setCheckpointSpots(game.id, spots);
+      } catch {
+        // Hinweis und erneuter Versuch in der Lobby.
+      }
+    }
+    setSaving(null);
+    router.back();
   };
 
   return (
@@ -147,6 +160,7 @@ export default function AreaEditor() {
         </Row>
         {problem ? <Banner text={problem} color={colors.hunter} /> : null}
         <T variant="muted">Nur öffentliche Wege und Plätze. Keine Gleise, Autobahnen oder Privatgelände.</T>
+        {saving ? <Banner text={saving} color={colors.signal} /> : null}
         <Row>
           <Button title="Vorschlag um mich" kind="secondary" style={{ flex: 1 }} onPress={suggest} />
           <Button
@@ -163,11 +177,14 @@ export default function AreaEditor() {
             title="Speichern"
             style={{ flex: 1 }}
             onPress={save}
-            loading={saving}
+            loading={saving !== null}
             disabled={points.length < 3 || problem !== null}
           />
         </Row>
-        <Button title="Abbrechen" kind="ghost" onPress={() => router.back()} />
+        <Button title="Abbrechen" kind="ghost" onPress={() => router.back()} disabled={saving !== null} />
+        <T variant="muted" center>
+          Tote Briefkästen nur auf Fußwegen · {OSM_ATTRIBUTION}
+        </T>
       </SafeAreaView>
     </View>
   );

@@ -6,11 +6,13 @@ import QRCode from 'react-native-qrcode-svg';
 import { GameMap } from '@/components/game-map';
 import { Badge, Banner, Button, Card, Chip, Row, Screen, T } from '@/components/ui';
 import type { GameData } from '@/hooks/use-game';
+import { ABILITIES, ALL_ABILITIES } from '@/lib/abilities';
 import { api } from '@/lib/api';
 import { errorMessage } from '@/lib/errors';
 import { formatArea, polygonAreaM2, regionFor, suggestedAreaM2 } from '@/lib/geo';
 import { joinLink } from '@/lib/links';
 import { startTracking, type TrackingMode } from '@/lib/location';
+import { fetchCheckpointSpots, OSM_ATTRIBUTION } from '@/lib/osm';
 import {
   DURATION_OPTIONS_SEC,
   HEADSTART_OPTIONS_SEC,
@@ -21,7 +23,7 @@ import {
 import { storage } from '@/lib/storage';
 import { colors, mono, radius, space } from '@/lib/theme';
 import { formatMinutes } from '@/lib/time';
-import type { GameMode, Player } from '@/lib/types';
+import type { AbilityId, GameMode, Player } from '@/lib/types';
 
 export function Lobby({ data }: { data: GameData }) {
   const { game, players, isHost, userId } = data;
@@ -49,6 +51,34 @@ export function Lobby({ data }: { data: GameData }) {
 
   const saveSettings = (mode: GameMode, headstart: number, duration: number) =>
     run('settings', () => api.updateSettings(game.id, mode, headstart, duration));
+
+  const saveExtras = (abilities: AbilityId[], checkpoints: boolean) =>
+    run('extras', () => api.updateExtras(game.id, abilities, checkpoints));
+
+  const toggleAbility = (a: AbilityId) =>
+    saveExtras(game.abilities.includes(a) ? game.abilities.filter((x) => x !== a) : [...game.abilities, a], game.checkpoints_enabled);
+
+  const loadSpots = () =>
+    run('spots', async () => {
+      if (!area) return;
+      const spots = await fetchCheckpointSpots(area);
+      const res = await api.setCheckpointSpots(game.id, spots);
+      if (res.spots === 0) {
+        Alert.alert(
+          'Keine sicheren Orte gefunden',
+          'In diesem Gebiet gibt es laut OpenStreetMap keine passenden Fußwege. Ohne sie gibt es keine toten Briefkästen.',
+        );
+      }
+    });
+
+  const runnerAbilitiesOn = game.abilities.some((a) => ABILITIES[a].role === 'runner');
+  let spotsText: string;
+  if (!game.checkpoints_enabled) spotsText = 'Aus: In dieser Runde gibt es keine toten Briefkästen.';
+  else if (!runnerAbilitiesOn) spotsText = 'Ohne Agenten-Fähigkeiten gibt es nichts zu holen, also auch keine Briefkästen.';
+  else if (!area) spotsText = 'Sobald das Einsatzgebiet steht, sucht die App sichere Orte auf Fußwegen.';
+  else if (game.checkpoint_spot_count > 0)
+    spotsText = `${game.checkpoint_spot_count} sichere Orte auf Fußwegen gefunden. Ab 2 Minuten nach Jagdbeginn erscheint alle 7 Minuten an einem davon ein Briefkasten.`;
+  else spotsText = isHost ? 'Noch keine sicheren Orte. Ohne sie gibt es keine Briefkästen.' : 'Der Host sucht noch sichere Orte für die Briefkästen.';
 
   const toggleRole = (p: Player) => {
     if (!isHost) return;
@@ -199,6 +229,43 @@ export function Lobby({ data }: { data: GameData }) {
       </Card>
 
       <Card>
+        <T variant="heading">Extras</T>
+        <T variant="label">Fähigkeiten</T>
+        <Row>
+          {ALL_ABILITIES.map((a) => (
+            <Chip
+              key={a}
+              label={`${ABILITIES[a].label} · ${roleLabel[ABILITIES[a].role]}`}
+              selected={game.abilities.includes(a)}
+              disabled={!isHost || busy !== null}
+              onPress={isHost ? () => void toggleAbility(a) : undefined}
+            />
+          ))}
+        </Row>
+        <T variant="muted">
+          Jeder startet mit einer zufälligen Fähigkeit seiner Rolle. Agenten holen sich mehr an toten Briefkästen, Jäger
+          bekommen eine pro Fang.
+        </T>
+        <T variant="label">Tote Briefkästen</T>
+        <Row>
+          {[true, false].map((on) => (
+            <Chip
+              key={String(on)}
+              label={on ? 'An' : 'Aus'}
+              selected={game.checkpoints_enabled === on}
+              disabled={!isHost || busy !== null}
+              onPress={isHost ? () => void saveExtras(game.abilities, on) : undefined}
+            />
+          ))}
+        </Row>
+        <T variant="muted">{spotsText}</T>
+        {isHost && game.checkpoints_enabled && runnerAbilitiesOn && area && game.checkpoint_spot_count === 0 ? (
+          <Button title="Sichere Orte suchen" kind="secondary" onPress={() => void loadSpots()} loading={busy === 'spots'} disabled={busy !== null} />
+        ) : null}
+        {game.checkpoint_spot_count > 0 ? <T variant="muted">{OSM_ATTRIBUTION}</T> : null}
+      </Card>
+
+      <Card>
         <Row style={{ justifyContent: 'space-between' }}>
           <T variant="heading">Einsatzgebiet</T>
           {area ? <T variant="mono">{formatArea(areaM2)}</T> : null}
@@ -241,6 +308,12 @@ export function Lobby({ data }: { data: GameData }) {
             onPress={async () => setTracking(await startTracking(game.id, true))}
           />
         ) : null}
+      </Card>
+
+      <Card>
+        <T variant="label">Strafen</T>
+        <T variant="muted">• Wer sich 3 Minuten kaum bewegt (unter 20 m), bekommt einen Extra-Ping. Das Handy warnt nach 2 Minuten.</T>
+        <T variant="muted">• Wer das Einsatzgebiet verlässt, hat 30 Sekunden Zeit. Danach sieht der Jäger den genauen Standort, bis man zurück ist.</T>
       </Card>
 
       <Card accent={colors.warning}>
