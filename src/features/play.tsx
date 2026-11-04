@@ -1,25 +1,49 @@
 import * as Haptics from 'expo-haptics';
 import { useKeepAwake } from 'expo-keep-awake';
 import { router } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Circle, Marker } from 'react-native-maps';
 import QRCode from 'react-native-qrcode-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AbilityBar } from '@/components/ability-bar';
 import { GameMap, toCoord } from '@/components/game-map';
+import { CheckpointMarker, CompassRay, JammedLabel, PingCircle } from '@/components/map-layers';
+import { RadarSweep } from '@/components/radar-sweep';
 import { Badge, Banner, Button, Row, T } from '@/components/ui';
 import { useServerNow, type GameData } from '@/hooks/use-game';
+import { ABILITIES, abilitySlots, directionName } from '@/lib/abilities';
 import { api } from '@/lib/api';
 import { errorMessage } from '@/lib/errors';
-import { regionFor } from '@/lib/geo';
-import { onPositionSent, startTracking, type TrackingMode } from '@/lib/location';
-import { countActiveRunners, countRunnersAtStart, huntPhase, latestPingPerTarget, modeLabel, PING_WARNING_MS } from '@/lib/rules';
+import { describeEvent, describePing, pickMessage, type Message, type Tone, type Viewer } from '@/lib/event-messages';
+import { distanceM, formatDistance, regionFor } from '@/lib/geo';
+import { onPositionSent, sendCurrentPosition, startTracking, type TrackingMode } from '@/lib/location';
+import {
+  BOUNDARY_GRACE_SEC,
+  countActiveRunners,
+  countRunnersAtStart,
+  huntPhase,
+  IDLE_PENALTY_SEC,
+  IDLE_WARNING_SEC,
+  modeLabel,
+  openCheckpoints,
+  PING_WARNING_MS,
+  pingTrails,
+} from '@/lib/rules';
+import { onMutedChange, playSound, releaseSounds, setMuted } from '@/lib/sound';
 import { colors, mono, radius, space } from '@/lib/theme';
 import { formatAgo, formatCountdown } from '@/lib/time';
-import type { GameEvent, Ping, Player } from '@/lib/types';
+import type { AbilityId, LatLng, Player } from '@/lib/types';
 
-type Viewer = 'runner' | 'hunter' | 'spectator';
+const toneColor: Record<Tone, string> = {
+  danger: colors.hunter,
+  warning: colors.warning,
+  good: colors.signal,
+  info: colors.muted,
+};
+
+const COMPASS_MS = 10_000;
 
 function KeepAwake() {
   useKeepAwake('signal-hunt-game');
@@ -27,17 +51,36 @@ function KeepAwake() {
 }
 
 export function Play({ data }: { data: GameData }) {
-  const { game, players, positions, pings, events, me, userId, secret } = data;
+  const { game, players, positions, pings, events, me, userId, secret, abilities, checkpoints, claims, penalty } = data;
   const now = useServerNow(data.offsetMs, 500);
+  const deviceNow = now - data.offsetMs;
   const [tracking, setTracking] = useState<TrackingMode | null>(null);
   const [inside, setInside] = useState<boolean | null>(null);
+  const [myPos, setMyPos] = useState<LatLng | null>(null);
   const [showId, setShowId] = useState(false);
-  const [toast, setToast] = useState<{ text: string; color: string } | null>(null);
+  const [toast, setToast] = useState<Message | null>(null);
+  const [busyAbility, setBusyAbility] = useState<AbilityId | null>(null);
+  const [compass, setCompass] = useState<{ bearing: number | null; until: number } | null>(null);
+  const [muted, setMutedState] = useState(false);
   const lastEventId = useRef<number | null>(null);
+  const lastPingId = useRef<number | null>(null);
   const warnedSeq = useRef<number | null>(null);
+  const idleWarned = useRef(false);
+  const outsideWarned = useRef(false);
 
   const viewer: Viewer = me?.status === 'out' ? 'spectator' : me?.role === 'hunter' ? 'hunter' : 'runner';
   const names = useMemo(() => Object.fromEntries(players.map((p) => [p.user_id, p.name])), [players]);
+
+  const announce = useCallback((message: Message | null) => {
+    if (!message) return;
+    setToast(message);
+    if (message.sound) playSound(message.sound);
+    if (message.tone === 'danger' || message.tone === 'warning') {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    } else if (message.tone === 'good') {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+  }, []);
 
   // Standort senden, solange die Runde läuft.
   useEffect(() => {
@@ -46,37 +89,53 @@ export function Play({ data }: { data: GameData }) {
     void startTracking(game.id, true).then((mode) => {
       if (!cancelled) setTracking(mode);
     });
-    const off = onPositionSent((_p, isInside) => setInside(isInside));
+    const off = onPositionSent((p, result) => {
+      setInside(result.inside);
+      setMyPos({ lat: p.lat, lng: p.lng });
+    });
     return () => {
       cancelled = true;
       off();
     };
   }, [game?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Meldungen zu neuen Ereignissen (nur Ereignisse ab jetzt, nicht die alten).
+  useEffect(() => onMutedChange(setMutedState), []);
+  useEffect(() => () => releaseSounds(), []);
+
+  // Meldungen zu neuen Ereignissen und besonderen Pings (nur neue, nicht die beim Laden).
   useEffect(() => {
-    if (events.length === 0) return;
-    const newest = events[events.length - 1];
-    if (lastEventId.current === null) {
-      lastEventId.current = newest.id;
+    const maxEvent = events.reduce((m, e) => Math.max(m, e.id), 0);
+    const maxPing = pings.reduce((m, p) => Math.max(m, p.id), 0);
+    if (lastEventId.current === null || lastPingId.current === null) {
+      lastEventId.current = maxEvent;
+      lastPingId.current = maxPing;
       return;
     }
-    const fresh = events.filter((e) => e.id > (lastEventId.current ?? 0));
-    lastEventId.current = newest.id;
-    const message = fresh.map((e) => describeEvent(e, names, userId, viewer)).filter(Boolean).pop();
-    if (message) {
-      setToast(message);
-      void Haptics.notificationAsync(
-        message.color === colors.hunter ? Haptics.NotificationFeedbackType.Warning : Haptics.NotificationFeedbackType.Success,
-      );
-    }
-  }, [events, names, userId, viewer]);
+    const freshEvents = events.filter((e) => e.id > (lastEventId.current ?? 0));
+    const freshPings = pings.filter((p) => p.id > (lastPingId.current ?? 0));
+    lastEventId.current = Math.max(lastEventId.current, maxEvent);
+    lastPingId.current = Math.max(lastPingId.current, maxPing);
+    if (freshEvents.length === 0 && freshPings.length === 0) return;
+    announce(
+      pickMessage([
+        ...freshEvents.map((e) => describeEvent(e, names, userId, viewer)),
+        ...freshPings.map((p) => describePing(p, names, userId, viewer)),
+      ]),
+    );
+  }, [events, pings, names, userId, viewer, announce]);
 
   useEffect(() => {
     if (!toast) return;
     const id = setTimeout(() => setToast(null), 5000);
     return () => clearTimeout(id);
   }, [toast]);
+
+  // Kompass nach 10 Sekunden ausblenden.
+  useEffect(() => {
+    if (!compass) return;
+    const id = setTimeout(() => setCompass(null), Math.max(0, compass.until - Date.now()));
+    return () => clearTimeout(id);
+  }, [compass]);
 
   // Vorwarnung für Agenten 30 Sekunden vor dem Ping.
   const nextPingIn = game?.next_ping_at ? Date.parse(game.next_ping_at) - now : null;
@@ -88,20 +147,49 @@ export function Play({ data }: { data: GameData }) {
     }
   }, [warnNow, game]);
 
+  // Strafen: Werte vom Server, hier im Sekundentakt weitergezählt.
+  const runnerPlaying = viewer === 'runner' && (game?.status === 'hunt' || game?.status === 'headstart');
+  const elapsed = penalty ? (deviceNow - penalty.at) / 1000 : 0;
+  const idleSec = runnerPlaying && penalty?.idleSec != null ? penalty.idleSec + elapsed : null;
+  const outsideSec = runnerPlaying && penalty?.outsideSec != null ? penalty.outsideSec + elapsed : null;
+  const idleWarning = idleSec !== null && idleSec >= IDLE_WARNING_SEC;
+  useEffect(() => {
+    if (idleWarning && !idleWarned.current) void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    idleWarned.current = idleWarning;
+  }, [idleWarning]);
+  const isOutside = outsideSec !== null;
+  useEffect(() => {
+    if (isOutside && !outsideWarned.current) {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      playSound('alarm');
+    }
+    outsideWarned.current = isOutside;
+  }, [isOutside]);
+
   const areaPoints = game?.area ?? null;
   const region = useMemo(() => (areaPoints ? regionFor(areaPoints, 1.15) : null), [areaPoints]);
+  const trails = useMemo(() => pingTrails(pings), [pings]);
 
   if (!game || !me) return null;
 
   const headstart = game.status === 'headstart';
-  const timeLeft = headstart
-    ? Date.parse(game.hunt_starts_at ?? '') - now
-    : Date.parse(game.ends_at ?? '') - now;
+  const timeLeft = headstart ? Date.parse(game.hunt_starts_at ?? '') - now : Date.parse(game.ends_at ?? '') - now;
   const phase = huntPhase(game, now);
   const freeRunners = countActiveRunners(players);
   const totalRunners = countRunnersAtStart(players);
-  const latest = latestPingPerTarget(pings);
-  const myPing = latest.get(me.user_id) ?? null;
+  const myTrail = trails.get(me.user_id) ?? null;
+  const freeRunnerIds = new Set(players.filter((p) => p.role === 'runner' && p.status === 'active').map((p) => p.user_id));
+  const here = myPos ?? (positions[me.user_id] ? { lat: positions[me.user_id].lat, lng: positions[me.user_id].lng } : null);
+  const visibleCheckpoints = openCheckpoints(checkpoints, claims, now);
+  const nearest = here
+    ? visibleCheckpoints
+        .map((c) => ({ c, d: distanceM(here, c) }))
+        .sort((a, b) => a.d - b.d)[0] ?? null
+    : null;
+  const slots = viewer === 'spectator' ? [] : abilitySlots(me.role, game.abilities, abilities, now);
+  const armed = slots.filter((s) => s.armed);
+  const compassOn = compass && compass.until > deviceNow ? compass : null;
+  const nextCheckpointIn = game.next_checkpoint_at ? Date.parse(game.next_checkpoint_at) - now : null;
 
   const sos = () =>
     Alert.alert('Notfall: Runde für alle beenden?', 'Alle Spieler sehen sofort, dass die Runde abgebrochen wurde.', [
@@ -113,6 +201,41 @@ export function Play({ data }: { data: GameData }) {
       },
     ]);
 
+  const runAbility = async (ability: AbilityId) => {
+    setBusyAbility(ability);
+    try {
+      // Der Kompass rechnet ab deinem Standort: vorher einen frischen schicken.
+      if (ability === 'compass') await sendCurrentPosition(game.id);
+      const res = await api.activateAbility(game.id, ability);
+      if (res.ability === 'compass') {
+        setCompass({ bearing: res.bearing_deg, until: Date.now() + COMPASS_MS });
+        playSound('ping');
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else if (res.ability === 'radar') {
+        announce({
+          text: res.targets === 1 ? 'Radar: 1 Agent geortet.' : `Radar: ${res.targets} Agenten geortet.`,
+          tone: 'warning',
+          sound: 'ping',
+          priority: 5,
+        });
+      }
+      // Störsender und Fake-Ping melden sich über das eigene Ereignis.
+      await data.refresh();
+    } catch (e) {
+      Alert.alert('Geht gerade nicht', errorMessage(e));
+    } finally {
+      setBusyAbility(null);
+    }
+  };
+
+  const triggerAbility = (ability: AbilityId) => {
+    const info = ABILITIES[ability];
+    Alert.alert(`${info.label} einsetzen?`, info.description, [
+      { text: 'Abbrechen', style: 'cancel' },
+      { text: 'Einsetzen', onPress: () => void runAbility(ability) },
+    ]);
+  };
+
   const hunterLocked = viewer === 'hunter' && headstart;
 
   return (
@@ -122,34 +245,31 @@ export function Play({ data }: { data: GameData }) {
       {region && !hunterLocked ? (
         <GameMap initialRegion={region} area={game.area} areaColor={viewer === 'hunter' ? colors.hunter : colors.signal}>
           {viewer !== 'runner'
-            ? [...latest.values()].map((p) => (
-                <PingLayer key={p.id} ping={p} name={names[p.target_id] ?? 'Agent'} now={now} />
-              ))
+            ? [...trails.entries()].filter(([target]) => freeRunnerIds.has(target)).map(([target, trail]) => {
+                const name = names[target] ?? 'Agent';
+                return (
+                  <Fragment key={`trail-${target}`}>
+                    {trail.previous ? <PingCircle ping={trail.previous} name={name} now={now} faded /> : null}
+                    {trail.located ? <PingCircle ping={trail.located} name={name} now={now} /> : null}
+                    {trail.latest.kind === 'jammed' && trail.located ? <JammedLabel at={trail.located} name={name} /> : null}
+                  </Fragment>
+                );
+              })
             : null}
-          {viewer !== 'runner'
-            ? pings
-                .filter((p) => latest.get(p.target_id)?.id !== p.id && latest.get(p.target_id)!.seq - p.seq === 1)
-                .map((p) => (
-                  <Circle
-                    key={`old-${p.id}`}
-                    center={toCoord(p)}
-                    radius={p.radius_m}
-                    strokeColor="rgba(255,59,78,0.35)"
-                    strokeWidth={1}
-                    fillColor="rgba(255,59,78,0.05)"
-                  />
-                ))
-            : null}
-          {viewer === 'runner' && myPing ? (
+          {viewer === 'runner' && myTrail?.located ? (
             <Circle
-              center={toCoord(myPing)}
-              radius={myPing.radius_m}
+              center={toCoord(myTrail.located)}
+              radius={myTrail.located.kind === 'exposed' ? 12 : myTrail.located.radius_m}
               strokeColor={colors.hunter}
               strokeWidth={2}
               lineDashPattern={[8, 8]}
               fillColor="rgba(255,59,78,0.08)"
             />
           ) : null}
+          {visibleCheckpoints.map((c) => (
+            <CheckpointMarker key={`cp-${c.id}`} checkpoint={c} now={now} />
+          ))}
+          {compassOn && compassOn.bearing !== null && here ? <CompassRay from={here} bearingDeg={compassOn.bearing} /> : null}
           {Object.values(positions)
             .filter((pos) => pos.user_id !== me.user_id)
             .map((pos) => {
@@ -166,6 +286,7 @@ export function Play({ data }: { data: GameData }) {
 
       {hunterLocked ? (
         <View style={styles.lock}>
+          <RadarSweep size={180} color={colors.hunter} />
           <T variant="label" color={colors.hunter}>
             Ermittler-Terminal gesperrt
           </T>
@@ -189,9 +310,18 @@ export function Play({ data }: { data: GameData }) {
               color={viewer === 'hunter' ? colors.hunter : viewer === 'spectator' ? colors.muted : colors.signal}
             />
             <T variant="label">{headstart ? 'Vorsprung' : `Phase ${phase} von 3`}</T>
-            <Pressable onPress={sos} style={styles.sos} accessibilityLabel="Notfall: Runde beenden">
-              <Text style={styles.sosText}>SOS</Text>
-            </Pressable>
+            <Row gap={space.xs}>
+              <Pressable
+                onPress={() => void setMuted(!muted)}
+                style={styles.iconButton}
+                accessibilityRole="button"
+                accessibilityLabel={muted ? 'Ton einschalten' : 'Ton ausschalten'}>
+                <Text style={styles.iconButtonText}>{muted ? 'Ton aus' : 'Ton an'}</Text>
+              </Pressable>
+              <Pressable onPress={sos} style={styles.sos} accessibilityRole="button" accessibilityLabel="Notfall: Runde beenden">
+                <Text style={styles.sosText}>SOS</Text>
+              </Pressable>
+            </Row>
           </Row>
           <Row style={{ justifyContent: 'space-between', alignItems: 'flex-end' }}>
             <View>
@@ -201,9 +331,7 @@ export function Play({ data }: { data: GameData }) {
             {!headstart && nextPingIn !== null ? (
               <View style={{ alignItems: 'flex-end' }}>
                 <T variant="label">Nächster Ping</T>
-                <Text style={[styles.timerSmall, warnNow ? { color: colors.warning } : null]}>
-                  {formatCountdown(nextPingIn)}
-                </Text>
+                <Text style={[styles.timerSmall, warnNow ? { color: colors.warning } : null]}>{formatCountdown(nextPingIn)}</Text>
               </View>
             ) : null}
           </Row>
@@ -211,9 +339,38 @@ export function Play({ data }: { data: GameData }) {
 
         {headstart && viewer === 'runner' ? <Banner text="Lauf los! Der Jäger sieht dich noch nicht." color={colors.signal} /> : null}
         {warnNow ? <Banner text="Ping in wenigen Sekunden! Wechsle jetzt die Position." /> : null}
-        {inside === false ? <Banner text="Du bist außerhalb des Einsatzgebiets! Geh sofort zurück." color={colors.hunter} /> : null}
+        {viewer === 'runner' && outsideSec !== null ? (
+          <Banner
+            color={colors.hunter}
+            text={
+              headstart
+                ? 'Du bist außerhalb des Einsatzgebiets! Geh zurück, sonst sieht dich der Jäger, sobald die Jagd beginnt.'
+                : outsideSec < BOUNDARY_GRACE_SEC
+                  ? `Zurück ins Einsatzgebiet! Noch ${Math.ceil(BOUNDARY_GRACE_SEC - outsideSec)} s, dann sieht der Jäger deinen genauen Standort.`
+                  : 'Der Jäger sieht deinen genauen Standort, bis du zurück im Einsatzgebiet bist!'
+            }
+          />
+        ) : viewer !== 'runner' && inside === false ? (
+          <Banner text="Du bist außerhalb des Einsatzgebiets. Geh zurück." color={colors.hunter} />
+        ) : null}
+        {idleWarning && idleSec !== null ? (
+          <Banner text={`Beweg dich! In ${Math.max(0, Math.ceil(IDLE_PENALTY_SEC - idleSec))} s bekommt der Jäger einen Extra-Ping von dir.`} />
+        ) : null}
+        {compassOn ? (
+          <Banner
+            color={colors.hunter}
+            text={
+              compassOn.bearing === null
+                ? 'Kompass: Ein Agent ist ganz in deiner Nähe!'
+                : `Kompass: Nächster Agent Richtung ${directionName(compassOn.bearing)} (${Math.round(compassOn.bearing)}°)`
+            }
+          />
+        ) : null}
+        {armed.map((s) => (
+          <Banner key={`armed-${s.ability}`} color={colors.signal} text={`${ABILITIES[s.ability].label} scharf: ${ABILITIES[s.ability].short}.`} />
+        ))}
         {tracking === 'off' ? <Banner text="Kein Standortzugriff! Erlaube ihn in den Einstellungen." color={colors.hunter} /> : null}
-        {toast ? <Banner text={toast.text} color={toast.color} /> : null}
+        {toast ? <Banner text={toast.text} color={toneColor[toast.tone]} /> : null}
       </SafeAreaView>
 
       <SafeAreaView edges={['bottom']} style={styles.panel}>
@@ -226,28 +383,40 @@ export function Play({ data }: { data: GameData }) {
         {viewer === 'runner' ? (
           <>
             <T variant="muted">
-              {myPing
-                ? `Der Jäger hat dich zuletzt ${formatAgo(now - Date.parse(myPing.created_at))} im roten Kreis gesehen.`
-                : headstart
-                  ? 'Nutze den Vorsprung und versteck dich gut.'
-                  : 'Noch kein Ping von dir.'}
+              {myTrail?.latest.kind === 'jammed'
+                ? 'Dein letzter Ping war gestört. Der Jäger hat keinen neuen Kreis von dir.'
+                : myTrail?.located
+                  ? `Der Jäger hat dich zuletzt ${formatAgo(now - Date.parse(myTrail.located.created_at))} im roten Kreis gesehen.`
+                  : headstart
+                    ? 'Nutze den Vorsprung und versteck dich gut.'
+                    : 'Noch kein Ping von dir.'}
             </T>
+            {nearest ? (
+              <T variant="muted" color={colors.warning}>
+                Toter Briefkasten {formatDistance(nearest.d)} entfernt
+                {Date.parse(nearest.c.hunters_see_at) > now
+                  ? ` · Jäger sieht ihn in ${formatCountdown(Date.parse(nearest.c.hunters_see_at) - now)}`
+                  : ' · Jäger sieht ihn auch'}
+              </T>
+            ) : !headstart && nextCheckpointIn !== null && nextCheckpointIn > 0 ? (
+              <T variant="muted">Nächster toter Briefkasten in {formatCountdown(nextCheckpointIn)}</T>
+            ) : null}
+            <AbilityBar slots={slots} accent={colors.signal} busy={busyAbility} onUse={triggerAbility} />
             <Button title="Agenten-ID zeigen" onPress={() => setShowId(true)} disabled={!secret} />
           </>
         ) : null}
         {viewer === 'hunter' ? (
           <>
             <T variant="muted">
-              {headstart
-                ? 'Warte, bis der Vorsprung vorbei ist.'
-                : 'Erwischt? Scanne die Agenten-ID auf dem Handy des Agenten.'}
+              {headstart ? 'Warte, bis der Vorsprung vorbei ist.' : 'Erwischt? Scanne die Agenten-ID auf dem Handy des Agenten.'}
             </T>
-            <Button
-              title="Agenten-ID scannen"
-              kind="hunter"
-              onPress={() => router.push(`/game/${game.id}/scan`)}
-              disabled={headstart}
-            />
+            {visibleCheckpoints.length > 0 ? (
+              <T variant="muted" color={colors.warning}>
+                Ein toter Briefkasten ist aufgetaucht. Agenten wollen dorthin: Lauere ihnen auf!
+              </T>
+            ) : null}
+            <AbilityBar slots={slots} accent={colors.hunter} busy={busyAbility} onUse={triggerAbility} />
+            <Button title="Agenten-ID scannen" kind="hunter" onPress={() => router.push(`/game/${game.id}/scan`)} disabled={headstart} />
           </>
         ) : null}
         {viewer === 'spectator' ? (
@@ -259,28 +428,6 @@ export function Play({ data }: { data: GameData }) {
         <AgentId name={me.name} token={secret} onClose={() => setShowId(false)} />
       </Modal>
     </View>
-  );
-}
-
-function PingLayer({ ping, name, now }: { ping: Ping; name: string; now: number }) {
-  return (
-    <>
-      <Circle
-        center={toCoord(ping)}
-        radius={ping.radius_m}
-        strokeColor={colors.hunter}
-        strokeWidth={2}
-        fillColor="rgba(255,59,78,0.16)"
-      />
-      <Marker coordinate={toCoord(ping)} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges>
-        <View style={styles.pingLabel}>
-          <Text style={styles.pingName} numberOfLines={1}>
-            {name}
-          </Text>
-          <Text style={styles.pingAge}>{formatAgo(now - Date.parse(ping.created_at))}</Text>
-        </View>
-      </Marker>
-    </>
   );
 }
 
@@ -317,35 +464,6 @@ function AgentId({ name, token, onClose }: { name: string; token: string | null;
   );
 }
 
-function describeEvent(
-  e: GameEvent,
-  names: Record<string, string>,
-  userId: string | null,
-  viewer: Viewer,
-): { text: string; color: string } | null {
-  const actor = e.actor_id ? (names[e.actor_id] ?? 'Jemand') : 'Jemand';
-  const target = e.target_id ? (names[e.target_id] ?? 'Ein Agent') : 'Ein Agent';
-  switch (e.type) {
-    case 'hunt_started':
-      return { text: viewer === 'hunter' ? 'Die Jagd beginnt! Erster Ping ist da.' : 'Die Jagd beginnt! Der Jäger ist unterwegs.', color: colors.hunter };
-    case 'ping':
-      return viewer === 'runner'
-        ? { text: 'Ping! Der Jäger sieht jetzt deinen Kreis.', color: colors.hunter }
-        : { text: 'Neuer Ping empfangen.', color: colors.warning };
-    case 'caught':
-      if (e.target_id === userId) {
-        return e.payload.mode === 'infection'
-          ? { text: 'Du wurdest gefangen! Ab jetzt jagst du mit.', color: colors.hunter }
-          : { text: 'Du wurdest gefangen und bist raus.', color: colors.hunter };
-      }
-      return { text: `${target} wurde von ${actor} gefangen!`, color: colors.hunter };
-    case 'left':
-      return { text: `${actor} hat den Einsatz verlassen.`, color: colors.muted };
-    default:
-      return null;
-  }
-}
-
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   lock: {
@@ -368,6 +486,14 @@ const styles = StyleSheet.create({
   },
   timer: { color: colors.text, fontFamily: mono, fontSize: 40, fontWeight: '700' },
   timerSmall: { color: colors.text, fontFamily: mono, fontSize: 24, fontWeight: '700' },
+  iconButton: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: space.sm,
+    paddingVertical: 4,
+  },
+  iconButtonText: { color: colors.muted, fontWeight: '800', fontSize: 12 },
   sos: {
     borderWidth: 1,
     borderColor: colors.hunter,
@@ -389,18 +515,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderColor: colors.border,
   },
-  pingLabel: {
-    backgroundColor: 'rgba(7,9,11,0.85)',
-    borderColor: colors.hunter,
-    borderWidth: 1,
-    borderRadius: radius.sm,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    alignItems: 'center',
-    maxWidth: 140,
-  },
-  pingName: { color: colors.text, fontWeight: '800', fontSize: 12 },
-  pingAge: { color: colors.muted, fontSize: 10 },
   dotWrap: { alignItems: 'center' },
   dot: { width: 14, height: 14, borderRadius: 7, borderWidth: 2, borderColor: colors.black },
   dotName: { fontSize: 11, fontWeight: '800', maxWidth: 100 },

@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 
-import { api } from './api';
+import { api, type PositionResult } from './api';
 import type { LatLng } from './types';
 
 // Sendet den Standort an den Server, auch wenn das Handy in der Tasche ist.
@@ -13,7 +13,7 @@ const TASK_NAME = 'signal-hunt-location';
 const GAME_KEY = 'signal-hunt:tracking-game';
 const MIN_SEND_INTERVAL_MS = 4000;
 
-type Listener = (p: LatLng & { accuracy: number | null }, inside: boolean | null) => void;
+type Listener = (p: LatLng & { accuracy: number | null }, result: PositionResult) => void;
 
 let listeners = new Set<Listener>();
 let lastSentAt = 0;
@@ -22,18 +22,33 @@ let activeGameId: string | null = null;
 
 export type TrackingMode = 'background' | 'foreground' | 'off';
 
-async function send(gameId: string, loc: Location.LocationObject) {
+async function send(gameId: string, loc: Location.LocationObject, force = false): Promise<PositionResult | null> {
   const now = Date.now();
-  if (now - lastSentAt < MIN_SEND_INTERVAL_MS) return;
+  if (!force && now - lastSentAt < MIN_SEND_INTERVAL_MS) return null;
   lastSentAt = now;
   const p = { lat: loc.coords.latitude, lng: loc.coords.longitude };
   const accuracy = loc.coords.accuracy ?? null;
   try {
     const result = await api.updatePosition(gameId, p, accuracy);
-    listeners.forEach((l) => l({ ...p, accuracy }, result.inside));
+    listeners.forEach((l) => l({ ...p, accuracy }, result));
+    return result;
   } catch {
     // Kein Netz: beim nächsten Standort versuchen wir es wieder.
     lastSentAt = 0;
+    return null;
+  }
+}
+
+/**
+ * Holt sofort einen frischen Standort und schickt ihn. Wer stillsteht, sendet
+ * sonst nichts (das GPS meldet sich erst nach ein paar Metern), z. B. vor dem Kompass.
+ */
+export async function sendCurrentPosition(gameId: string): Promise<PositionResult | null> {
+  try {
+    const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+    return await send(gameId, loc, true);
+  } catch {
+    return null;
   }
 }
 

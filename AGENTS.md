@@ -2,6 +2,7 @@
 
 - Spielregeln leben im Backend (`supabase/migrations/*.sql`). Die App liest nur Tabellen und ruft RPCs auf; sie schreibt nie direkt in Tabellen.
 - Wichtigste Invariante: Jäger dürfen nie Standorte von Agenten lesen (RLS auf `positions`). Jede Änderung daran braucht einen Test in `supabase/tests/game.test.mjs`.
+- Ebenso geheim: Was Agenten heimlich tun (Störsender, Fake-Ping, geleerte tote Briefkästen). Ein Fake-Ping muss in `pings` genau wie ein echter aussehen; die Wahrheit steht nur in Ereignissen mit `audience = 'self'` oder im Schema `private`, das die App nicht erreicht.
 - Texte in der App sind Deutsch.
 - Vor dem Abschluss: `npm run typecheck`, `npm run lint`, `npm test` und (mit `npx supabase start`) `npm run test:backend`.
 

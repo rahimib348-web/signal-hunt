@@ -12,11 +12,23 @@ Das vollständige Spielkonzept steht im Konzept-Dokument (Claude Docs).
 - Vorsprung: Der Bildschirm des Jägers ist gesperrt
 - Pings: 3 Phasen, die Kreise werden kleiner (250 m → 150 m → 75 m) und die Pings kommen häufiger (5 → 4 → 3 Min.)
 - Vorwarnung 30 Sekunden vor jedem Ping für Agenten
-- Warnung beim Verlassen des Einsatzgebiets (die Strafe dafür kommt in Schritt 2)
+- Warnung beim Verlassen des Einsatzgebiets
 - Fangen per QR-Scan mit Entfernungsprüfung (höchstens 100 m)
 - SOS-Knopf beendet die Runde sofort für alle
 - Auswertung mit den Wegen aller Spieler auf der Karte, danach eine neue Runde mit derselben Gruppe
 - Datenschutz: Spiele samt Standorten werden spätestens nach 24 Stunden gelöscht
+
+## Stand: Schritt 2 (Spielspaß)
+
+- Fähigkeiten: Jeder startet mit einer zufälligen Fähigkeit seiner Rolle, der Host kann einzelne ausschalten.
+  - Agenten: **Störsender** (nächster Ping fällt aus, der Jäger sieht „Signal gestört“) und **Fake-Ping** (nächster Ping zeigt einen falschen Kreis, mindestens 300 m entfernt). Beide lassen sich schon im Vorsprung scharf schalten, Abklingzeit 10 Minuten.
+  - Jäger: **Radar** (sofort ein Ping von allen Agenten) und **Kompass** (10 Sekunden Richtung zum nächsten Agenten, ohne Entfernung). Abklingzeit 8 Minuten. Nach jedem Fang gibt es eine neue Fähigkeit.
+- Tote Briefkästen: 2 Minuten nach Jagdbeginn und danach alle 7 Minuten erscheint einer, nur auf Fußwegen aus OpenStreetMap (keine Straßenübergänge, Tunnel, Treppen oder privaten Wege). Agenten sehen ihn sofort, der Jäger nach 1 Minute. Wer zuerst bis auf 15 m herankommt, bekommt eine Fähigkeit. Nach 5 Minuten verschwindet er. Wer ihn geleert hat, erfährt der Jäger nicht.
+- Strafe fürs Stillstehen: Wer sich 3 Minuten weniger als 20 m bewegt, bekommt einen Extra-Ping. Das Handy warnt nach 2 Minuten.
+- Spielfeldgrenze: Wer das Einsatzgebiet verlässt, hat 30 Sekunden Zeit. Danach sieht der Jäger den genauen Standort, bis der Agent zurück ist. Das lässt sich weder stören noch fälschen.
+- Sounds (Funkrauschen und Radar-Piepen beim Ping, Glitch beim Störsender, Alarm, Briefkasten-Ton), Vibration bei Warnungen und ein Ton-Schalter im Spiel
+- Radar-Animation auf dem gesperrten Jäger-Bildschirm, Decknamen würfeln
+- Auswertung zeigt, wer welche Fähigkeiten eingesetzt, Fake-Pings geschickt und Briefkästen geleert hat
 
 ## Aufbau
 
@@ -81,4 +93,6 @@ npm run lint
 
 ## Nächste Schritte
 
-Siehe Fahrplan im Konzept: Schritt 2 bringt Fähigkeiten (Störsender, Fake-Ping, Radar, Kompass), Checkpoints, die Strafe fürs Stillstehen und an der Grenze, Sounds und mehr Agenten-Design.
+Siehe Fahrplan im Konzept: Nach Testrunden mit echten Handys folgt Schritt 3, die Veröffentlichung (Datenschutzerklärung, Impressum, Store-Einträge).
+
+Die Sounds erzeugt `python3 scripts/make-sounds.py`, die Icons `python3 scripts/make-icons.py`.

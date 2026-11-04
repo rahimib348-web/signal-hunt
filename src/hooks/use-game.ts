@@ -3,9 +3,20 @@ import { AppState } from 'react-native';
 
 import { api } from '@/lib/api';
 import { errorMessage } from '@/lib/errors';
+import { onPositionSent } from '@/lib/location';
 import { ensureSignedIn, supabase } from '@/lib/supabase';
 import { clockOffset } from '@/lib/time';
-import type { Game, GameEvent, Ping, Player, Position } from '@/lib/types';
+import type { Checkpoint, CheckpointClaim, Game, GameEvent, Ping, Player, PlayerAbility, Position } from '@/lib/types';
+
+/** Warnungen für den eigenen Agenten, wie der Server sie zuletzt gemeldet hat. */
+export type Penalty = {
+  /** Sekunden ohne echte Bewegung (nur während der Jagd). */
+  idleSec: number | null;
+  /** Sekunden außerhalb des Einsatzgebiets, sonst null. */
+  outsideSec: number | null;
+  /** Wann der Server das gemeldet hat (Handyzeit), zum Weiterzählen. */
+  at: number;
+};
 
 export type GameData = {
   userId: string | null;
@@ -14,6 +25,12 @@ export type GameData = {
   positions: Record<string, Position>;
   pings: Ping[];
   events: GameEvent[];
+  /** Nur die eigenen Fähigkeiten (mehr erlaubt der Server nicht). */
+  abilities: PlayerAbility[];
+  checkpoints: Checkpoint[];
+  /** Geleerte Briefkästen. Jäger bekommen diese Liste nie. */
+  claims: CheckpointClaim[];
+  penalty: Penalty | null;
   secret: string | null;
   me: Player | null;
   isHost: boolean;
@@ -27,6 +44,16 @@ export type GameData = {
 
 const TICK_MS_PLAYING = 5000;
 const TICK_MS_IDLE = 15000;
+/** Sicherheitsnetz, falls ein Echtzeit-Update verloren geht. */
+const REFETCH_MS_PLAYING = 30000;
+
+function upsertBy<T>(list: T[], item: T, same: (a: T) => boolean): T[] {
+  const i = list.findIndex(same);
+  if (i < 0) return [...list, item];
+  const next = [...list];
+  next[i] = { ...next[i], ...item };
+  return next;
+}
 
 /**
  * Hält alle Daten eines Spiels aktuell: einmal laden, dann über Echtzeit-Updates
@@ -41,6 +68,10 @@ export function useGame(gameId: string | undefined): GameData {
   const [positions, setPositions] = useState<Record<string, Position>>({});
   const [pings, setPings] = useState<Ping[]>([]);
   const [events, setEvents] = useState<GameEvent[]>([]);
+  const [abilities, setAbilities] = useState<PlayerAbility[]>([]);
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  const [claims, setClaims] = useState<CheckpointClaim[]>([]);
+  const [penalty, setPenalty] = useState<Penalty | null>(null);
   const [secret, setSecret] = useState<string | null>(null);
   const [offsetMs, setOffsetMs] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -53,15 +84,19 @@ export function useGame(gameId: string | undefined): GameData {
   const fetchAll = useCallback(async () => {
     if (!gameId) return;
     try {
-      const [g, pl, pos, pi, ev, sec] = await Promise.all([
+      const [g, pl, pos, pi, ev, sec, ab, cp, cl] = await Promise.all([
         supabase.from('games').select('*').eq('id', gameId).maybeSingle(),
         supabase.from('players').select('*').eq('game_id', gameId).order('joined_at'),
         supabase.from('positions').select('*').eq('game_id', gameId),
         supabase.from('pings').select('*').eq('game_id', gameId).order('id').limit(1000),
         supabase.from('events').select('*').eq('game_id', gameId).order('id', { ascending: false }).limit(50),
         supabase.from('player_secrets').select('catch_token').eq('game_id', gameId).maybeSingle(),
+        supabase.from('player_abilities').select('*').eq('game_id', gameId),
+        supabase.from('checkpoints').select('*').eq('game_id', gameId).order('id'),
+        supabase.from('checkpoint_claims').select('*').eq('game_id', gameId),
       ]);
-      const firstError = g.error ?? pl.error ?? pos.error ?? pi.error ?? ev.error ?? sec.error;
+      const firstError =
+        g.error ?? pl.error ?? pos.error ?? pi.error ?? ev.error ?? sec.error ?? ab.error ?? cp.error ?? cl.error;
       if (firstError) throw firstError;
       if (!g.data) {
         setNotFound(true);
@@ -76,6 +111,9 @@ export function useGame(gameId: string | undefined): GameData {
       setPings((pi.data ?? []) as Ping[]);
       setEvents(((ev.data ?? []) as GameEvent[]).reverse());
       setSecret((sec.data as { catch_token: string } | null)?.catch_token ?? null);
+      setAbilities((ab.data ?? []) as PlayerAbility[]);
+      setCheckpoints((cp.data ?? []) as Checkpoint[]);
+      setClaims((cl.data ?? []) as CheckpointClaim[]);
       setError(null);
     } catch (e) {
       setError(errorMessage(e));
@@ -140,6 +178,26 @@ export function useGame(gameId: string | undefined): GameData {
         const e = msg.new as GameEvent;
         setEvents((prev) => (prev.some((x) => x.id === e.id) ? prev : [...prev.slice(-49), e]));
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'player_abilities', filter }, (msg) => {
+        if (msg.eventType === 'DELETE') {
+          scheduleRefetch();
+          return;
+        }
+        const a = msg.new as PlayerAbility;
+        setAbilities((prev) => upsertBy(prev, a, (x) => x.ability === a.ability && x.user_id === a.user_id));
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'checkpoints', filter }, (msg) => {
+        if (msg.eventType === 'DELETE') {
+          scheduleRefetch();
+          return;
+        }
+        const c = msg.new as Checkpoint;
+        setCheckpoints((prev) => upsertBy(prev, c, (x) => x.id === c.id));
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'checkpoint_claims', filter }, (msg) => {
+        const c = msg.new as CheckpointClaim;
+        setClaims((prev) => (prev.some((x) => x.checkpoint_id === c.checkpoint_id) ? prev : [...prev, c]));
+      })
       .subscribe((status) => {
         // Nach dem (Wieder-)Verbinden alles neu laden, damit nichts verpasst wird.
         if (status === 'SUBSCRIBED') scheduleRefetch();
@@ -148,6 +206,17 @@ export function useGame(gameId: string | undefined): GameData {
       void supabase.removeChannel(channel);
     };
   }, [gameId, userId, scheduleRefetch]);
+
+  // Warnungen aus den Standort-Antworten übernehmen (kommen öfter als der Takt).
+  useEffect(
+    () =>
+      onPositionSent((_p, result) => {
+        if (result.status === 'hunt' || result.status === 'headstart') {
+          setPenalty({ idleSec: result.idle_sec ?? null, outsideSec: result.outside_sec ?? null, at: Date.now() });
+        }
+      }),
+    [],
+  );
 
   // Zurück in die App: neu laden.
   useEffect(() => {
@@ -169,6 +238,7 @@ export function useGame(gameId: string | undefined): GameData {
         const result = await api.tick(gameId);
         if (stopped) return;
         setOffsetMs(clockOffset(result.server_now, started, Date.now()));
+        setPenalty({ idleSec: result.idle_sec ?? null, outsideSec: result.outside_sec ?? null, at: Date.now() });
         if (result.status !== lastStatus.current || (playing && result.ping_seq !== game?.ping_seq)) {
           scheduleRefetch();
         }
@@ -178,9 +248,11 @@ export function useGame(gameId: string | undefined): GameData {
     };
     void tick();
     const id = setInterval(tick, playing ? TICK_MS_PLAYING : TICK_MS_IDLE);
+    const safety = playing ? setInterval(scheduleRefetch, REFETCH_MS_PLAYING) : null;
     return () => {
       stopped = true;
       clearInterval(id);
+      if (safety) clearInterval(safety);
     };
   }, [gameId, userId, status, game?.ping_seq, scheduleRefetch]);
 
@@ -200,6 +272,10 @@ export function useGame(gameId: string | undefined): GameData {
     positions,
     pings,
     events,
+    abilities,
+    checkpoints,
+    claims,
+    penalty,
     secret,
     me,
     isHost: !!game && game.host_id === userId,

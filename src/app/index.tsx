@@ -4,6 +4,7 @@ import { Alert, StyleSheet, View } from 'react-native';
 
 import { Button, Card, Field, Screen, T } from '@/components/ui';
 import { api } from '@/lib/api';
+import { randomCodename } from '@/lib/codenames';
 import { errorMessage } from '@/lib/errors';
 import { storage } from '@/lib/storage';
 import { ensureSignedIn, supabase } from '@/lib/supabase';
@@ -103,6 +104,7 @@ export default function Home() {
         autoCorrect={false}
         returnKeyType="done"
       />
+      <Button title="Decknamen würfeln" kind="ghost" onPress={() => setName(randomCodename())} />
 
       <Card>
         <T variant="heading">Neuer Einsatz</T>
@@ -131,7 +133,9 @@ export default function Home() {
         <T variant="muted">1. Der Host zeichnet das Einsatzgebiet auf die Karte.</T>
         <T variant="muted">2. Die Agenten bekommen Vorsprung, der Jäger sieht so lange nichts.</T>
         <T variant="muted">3. Danach sieht der Jäger regelmäßig Pings: Kreise, in denen ein Agent steckt.</T>
-        <T variant="muted">4. Gefangen ist, wessen Agenten-ID der Jäger scannt.</T>
+        <T variant="muted">4. Agenten holen sich an toten Briefkästen Störsender und Fake-Pings. Jäger haben Radar und Kompass.</T>
+        <T variant="muted">5. Wer zu lange stillsteht oder das Gebiet verlässt, wird für den Jäger sichtbar.</T>
+        <T variant="muted">6. Gefangen ist, wessen Agenten-ID der Jäger scannt.</T>
       </Card>
     </Screen>
   );

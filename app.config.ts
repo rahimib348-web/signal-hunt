@@ -68,6 +68,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         recordAudioAndroid: false,
       },
     ],
+    // Nur kurze Soundeffekte: kein Mikrofon, kein Abspielen im Hintergrund.
+    ['expo-audio', { microphonePermission: false, recordAudioAndroid: false, enableBackgroundPlayback: false }],
     ['react-native-maps', googleMapsAndroidKey ? { androidGoogleMapsApiKey: googleMapsAndroidKey } : {}],
   ],
   experiments: {

@@ -23,12 +23,22 @@ const messages: Record<string, string> = {
   not_a_hunter: 'Nur Jäger können Agenten fangen.',
   invalid_code: 'Diese Agenten-ID ist ungültig oder wurde schon gefangen.',
   too_far: 'Zu weit weg. Du musst direkt beim Agenten sein.',
+  invalid_ability: 'Unbekannte Fähigkeit.',
+  wrong_role: 'Diese Fähigkeit gehört zur anderen Rolle.',
+  ability_disabled: 'Diese Fähigkeit ist in dieser Runde ausgeschaltet.',
+  no_charges: 'Du hast diese Fähigkeit gerade nicht.',
+  cooldown: 'Die Fähigkeit lädt noch nach.',
+  already_armed: 'Die Fähigkeit ist schon scharf geschaltet.',
+  no_position: 'Dein Standort ist unbekannt. Warte kurz, bis das GPS dich findet.',
+  no_target: 'Gerade ist kein Agent zu orten.',
+  invalid_spots: 'Die Orte für tote Briefkästen sind ungültig.',
 };
 
 export function errorMessage(error: unknown): string {
   const raw =
     typeof error === 'object' && error !== null && 'message' in error ? String((error as { message: unknown }).message) : String(error);
   if (messages[raw]) return messages[raw];
+  if (/^overpass_|abort/i.test(raw)) return 'Die Kartendaten (OpenStreetMap) sind gerade nicht erreichbar. Versuch es gleich noch einmal.';
   if (/network|fetch|failed to fetch/i.test(raw)) return 'Keine Verbindung zum Server. Prüfe dein Internet.';
   return `Etwas ist schiefgelaufen (${raw}).`;
 }
