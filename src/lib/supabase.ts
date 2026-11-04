@@ -4,14 +4,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import { AppState, Platform } from 'react-native';
 
-// Werte aus der Datei .env (siehe .env.example). EXPO_PUBLIC_* landet in der App,
-// darf also nur öffentliche Schlüssel enthalten, niemals den Secret-Key.
-const url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
-const key = process.env.EXPO_PUBLIC_SUPABASE_KEY ?? '';
+// Unser Supabase-Projekt "signal-hunt1" (Frankfurt). Adresse und Publishable key sind
+// öffentlich: Sie stecken ohnehin in jeder App, die Daten schützen die Zugriffsregeln
+// (RLS) auf dem Server. Der Secret-Key gehört NIEMALS hierher.
+// Eine Datei .env (siehe .env.example) kann die Werte überschreiben, z. B. für ein lokales Supabase.
+const DEFAULT_URL = 'https://gjzrruxhbqygxhfdlzxd.supabase.co';
+const DEFAULT_KEY = 'sb_publishable_QmxZj9RUUDZ52pwJz6B0lQ_s-P5e9T5';
 
-export const isConfigured = url.length > 0 && key.length > 0;
+const url = process.env.EXPO_PUBLIC_SUPABASE_URL || DEFAULT_URL;
+const key = process.env.EXPO_PUBLIC_SUPABASE_KEY || DEFAULT_KEY;
 
-export const supabase = createClient(isConfigured ? url : 'http://localhost:54321', isConfigured ? key : 'missing', {
+export const supabase = createClient(url, key, {
   auth: {
     storage: AsyncStorage,
     autoRefreshToken: true,
