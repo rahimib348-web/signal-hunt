@@ -344,3 +344,39 @@ test('Echtzeit: Jäger bekommt Pings live, aber nie Agenten-Standorte', async ()
   assert.ok(!received.positions.includes(a.id), 'Agenten-Standort darf nie beim Jäger ankommen');
   assert.ok(received.positions.includes(hunter.id), 'Eigener Standort kommt an');
 });
+
+test('Neue Runde: Host setzt ein beendetes Spiel zurück in die Lobby', async () => {
+  const { hunter, runners, gameId } = await setupGame({ runners: 2 });
+  await rpc(hunter, 'start_game', { p_game: gameId });
+  assert.equal(await rpcError(hunter, 'reset_game', { p_game: gameId }), 'wrong_status');
+  await move(runners[0], gameId, CENTER);
+  await rpc(runners[1], 'abort_game', { p_game: gameId });
+  assert.equal(await rpcError(runners[0], 'reset_game', { p_game: gameId }), 'not_host');
+  await rpc(hunter, 'reset_game', { p_game: gameId });
+
+  const { data: g } = await runners[0].client.from('games').select('status, area, ping_seq').eq('id', gameId).single();
+  assert.equal(g.status, 'lobby');
+  assert.equal(g.area.length, 4, 'Einsatzgebiet bleibt erhalten');
+  const { data: players } = await runners[0].client.from('players').select('role, status').eq('game_id', gameId);
+  assert.equal(players.length, 3);
+  assert.ok(players.every((p) => p.role === 'runner' && p.status === 'active'));
+  const { data: pos } = await runners[0].client.from('positions').select('*').eq('game_id', gameId);
+  assert.deepEqual(pos, []);
+
+  // Neue Runde lässt sich wieder starten.
+  await rpc(hunter, 'set_role', { p_game: gameId, p_user: hunter.id, p_role: 'hunter' });
+  await rpc(hunter, 'start_game', { p_game: gameId });
+  const state = await rpc(runners[0], 'tick', { p_game: gameId });
+  assert.equal(state.status, 'headstart');
+});
+
+test('Aufräumen: alte Spiele werden mit allen Standorten gelöscht', async () => {
+  const { gameId } = await setupGame({ runners: 1 });
+  await db.query(`update games set created_at = now() - interval '25 hours' where id = $1`, [gameId]);
+  const { rows } = await db.query('select private.cleanup_old_games () as n');
+  assert.ok(rows[0].n >= 1);
+  const { rows: left } = await db.query('select count(*)::int as n from games where id = $1', [gameId]);
+  assert.equal(left[0].n, 0);
+  const { rows: jobs } = await db.query(`select jobname from cron.job where jobname = 'signal-hunt-cleanup'`);
+  assert.equal(jobs.length, 1);
+});

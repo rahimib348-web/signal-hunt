@@ -1,3 +1,10 @@
+# Signal Hunt – Hinweise für Coding-Agenten
+
+- Spielregeln leben im Backend (`supabase/migrations/*.sql`). Die App liest nur Tabellen und ruft RPCs auf; sie schreibt nie direkt in Tabellen.
+- Wichtigste Invariante: Jäger dürfen nie Standorte von Agenten lesen (RLS auf `positions`). Jede Änderung daran braucht einen Test in `supabase/tests/game.test.mjs`.
+- Texte in der App sind Deutsch.
+- Vor dem Abschluss: `npm run typecheck`, `npm run lint`, `npm test` und (mit `npx supabase start`) `npm run test:backend`.
+
 This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility.
 
 ## Expo has changed — do not trust your training data

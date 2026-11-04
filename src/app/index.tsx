@@ -1,98 +1,144 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { Alert, StyleSheet, View } from 'react-native';
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { Button, Card, Field, Screen, T } from '@/components/ui';
+import { api } from '@/lib/api';
+import { errorMessage } from '@/lib/errors';
+import { storage } from '@/lib/storage';
+import { ensureSignedIn, supabase } from '@/lib/supabase';
+import { colors, mono, space } from '@/lib/theme';
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
-  return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
+export default function Home() {
+  const [name, setName] = useState('');
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState<'create' | 'join' | null>(null);
+  const [resumeId, setResumeId] = useState<string | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void (async () => {
+        const saved = await storage.getName();
+        if (active && saved) setName((current) => current || saved);
+        // Läuft noch ein Einsatz von vorhin?
+        const last = await storage.getLastGame();
+        if (!last) return;
+        try {
+          await ensureSignedIn();
+          const { data } = await supabase.from('games').select('id, status').eq('id', last).maybeSingle();
+          if (active) setResumeId(data && data.status !== 'ended' ? data.id : null);
+        } catch {
+          // Offline: kein Hinweis.
+        }
+      })();
+      return () => {
+        active = false;
+      };
+    }, []),
   );
-}
 
-export default function HomeScreen() {
+  const cleanName = name.trim();
+  const cleanCode = code.trim().toUpperCase();
+
+  async function create() {
+    if (!cleanName) return Alert.alert('Agentenname fehlt', 'Gib zuerst deinen Namen ein.');
+    setBusy('create');
+    try {
+      await ensureSignedIn();
+      await storage.setName(cleanName);
+      const gameId = await api.createGame(cleanName);
+      await storage.setLastGame(gameId);
+      router.push(`/game/${gameId}`);
+    } catch (e) {
+      Alert.alert('Einsatz konnte nicht erstellt werden', errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function join() {
+    if (!cleanName) return Alert.alert('Agentenname fehlt', 'Gib zuerst deinen Namen ein.');
+    if (cleanCode.length !== 6) return Alert.alert('Code prüfen', 'Der Einsatz-Code hat 6 Zeichen.');
+    setBusy('join');
+    try {
+      await ensureSignedIn();
+      await storage.setName(cleanName);
+      const gameId = await api.joinGame(cleanCode, cleanName);
+      await storage.setLastGame(gameId);
+      setCode('');
+      router.push(`/game/${gameId}`);
+    } catch (e) {
+      Alert.alert('Beitritt fehlgeschlagen', errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
+    <Screen>
+      <View style={styles.logo}>
+        <T variant="label" color={colors.signal}>
+          ● Signal erfasst
+        </T>
+        <T variant="title" style={styles.logoText}>
+          SIGNAL HUNT
+        </T>
+        <T variant="muted">Agenten fliehen. Der Jäger folgt ihrem Signal.</T>
+      </View>
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
+      {resumeId ? (
+        <Card accent={colors.signal}>
+          <T variant="heading">Dein Einsatz läuft noch</T>
+          <Button title="Zurück zum Einsatz" onPress={() => router.push(`/game/${resumeId}`)} />
+        </Card>
+      ) : null}
 
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
+      <Field
+        label="Dein Agentenname"
+        value={name}
+        onChangeText={setName}
+        placeholder="z. B. Falke"
+        maxLength={24}
+        autoCorrect={false}
+        returnKeyType="done"
+      />
 
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+      <Card>
+        <T variant="heading">Neuer Einsatz</T>
+        <T variant="muted">Du wirst Host: Du legst das Einsatzgebiet fest und startest die Runde.</T>
+        <Button title="Einsatz erstellen" onPress={create} loading={busy === 'create'} disabled={busy !== null} />
+      </Card>
+
+      <Card>
+        <T variant="heading">Einsatz beitreten</T>
+        <Field
+          label="Einsatz-Code"
+          value={code}
+          onChangeText={(t) => setCode(t.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6))}
+          placeholder="ABC123"
+          autoCapitalize="characters"
+          autoCorrect={false}
+          maxLength={6}
+          style={styles.codeInput}
+        />
+        <Button title="Beitreten" onPress={join} loading={busy === 'join'} disabled={busy !== null} />
+        <Button title="QR-Code scannen" kind="secondary" onPress={() => router.push('/scan-join')} disabled={busy !== null} />
+      </Card>
+
+      <Card>
+        <T variant="label">So läuft eine Runde</T>
+        <T variant="muted">1. Der Host zeichnet das Einsatzgebiet auf die Karte.</T>
+        <T variant="muted">2. Die Agenten bekommen Vorsprung, der Jäger sieht so lange nichts.</T>
+        <T variant="muted">3. Danach sieht der Jäger regelmäßig Pings: Kreise, in denen ein Agent steckt.</T>
+        <T variant="muted">4. Gefangen ist, wessen Agenten-ID der Jäger scannt.</T>
+      </Card>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
-  },
-  title: {
-    textAlign: 'center',
-  },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
-  },
+  logo: { gap: space.xs, paddingTop: space.xl, paddingBottom: space.sm },
+  logoText: { fontFamily: mono, fontSize: 36, letterSpacing: 4 },
+  codeInput: { fontFamily: mono, letterSpacing: 6, fontSize: 24, textAlign: 'center' },
 });
