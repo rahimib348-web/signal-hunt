@@ -34,15 +34,19 @@ Der Jäger bekommt nie die echten Standorte der Agenten. Der Server berechnet di
 
 ### 1. Supabase-Projekt (Server)
 
-1. Konto auf [supabase.com](https://supabase.com) anlegen und ein neues Projekt erstellen. Region: **Frankfurt (eu-central-1)**.
-2. Im Dashboard unter **Authentication → Sign In / Providers** die Option **Allow anonymous sign-ins** einschalten. Spieler brauchen dann kein Konto.
-3. Datenbank einrichten:
-   ```bash
-   npx supabase login
-   npx supabase link --project-ref DEINE-PROJEKT-ID
-   npx supabase db push
-   ```
-4. `.env.example` nach `.env` kopieren und **Project URL** und **Publishable key** eintragen (Project Settings → API).
+**Erledigt.** Der Server läuft im Supabase-Projekt **signal-hunt1** (Projekt-ID `gjzrruxhbqygxhfdlzxd`, Frankfurt):
+
+- Beide Migrationen sind eingespielt, die anonyme Anmeldung ist an.
+- Alle 9 Server-Simulationen laufen gegen den echten Server durch.
+- Die App verbindet sich von selbst damit (Adresse und Publishable key stehen in `src/lib/supabase.ts`). Eine `.env` ist nicht nötig.
+
+Neue Migrationen später so einspielen:
+
+```bash
+npx supabase login
+npx supabase link --project-ref gjzrruxhbqygxhfdlzxd
+npx supabase db push
+```
 
 ### 2. App auf dem Handy testen
 
