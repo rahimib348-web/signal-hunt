@@ -16,6 +16,7 @@ const messages: Record<string, string> = {
   area_too_large: 'Das Einsatzgebiet ist zu groß (höchstens 25 km²).',
   no_area: 'Zeichne zuerst das Einsatzgebiet.',
   not_enough_players: 'Ihr braucht mindestens 2 Spieler.',
+  rules_not_accepted: 'Noch nicht alle haben die Sicherheitsregeln bestätigt.',
   no_runners: 'Es muss mindestens einen Agenten geben.',
   not_member: 'Du bist nicht in diesem Einsatz.',
   invalid_position: 'Ungültiger Standort.',

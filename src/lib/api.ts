@@ -49,6 +49,7 @@ export const api = {
     call<void>('set_role', { p_game: gameId, p_user: userId, p_role: role }),
   shuffleRoles: (gameId: string, hunters: number) => call<void>('shuffle_roles', { p_game: gameId, p_hunters: hunters }),
   setArea: (gameId: string, points: LatLng[]) => call<{ area_m2: number }>('set_area', { p_game: gameId, p_points: points }),
+  acceptRules: (gameId: string) => call<void>('accept_rules', { p_game: gameId }),
   startGame: (gameId: string) => call<void>('start_game', { p_game: gameId }),
   resetGame: (gameId: string) => call<void>('reset_game', { p_game: gameId }),
   tick: (gameId: string) => call<TickResult>('tick', { p_game: gameId }),

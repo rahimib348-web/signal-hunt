@@ -5,7 +5,7 @@ import QRCode from 'react-native-qrcode-svg';
 
 import { GameMap } from '@/components/game-map';
 import { Badge, Banner, Button, Card, Chip, Row, Screen, T } from '@/components/ui';
-import type { GameData } from '@/hooks/use-game';
+import { useServerNow, type GameData } from '@/hooks/use-game';
 import { ABILITIES, ALL_ABILITIES } from '@/lib/abilities';
 import { api } from '@/lib/api';
 import { errorMessage } from '@/lib/errors';
@@ -21,6 +21,7 @@ import {
   roleLabel,
 } from '@/lib/rules';
 import { storage } from '@/lib/storage';
+import { formatClock, nightNotice } from '@/lib/sun';
 import { colors, mono, radius, space } from '@/lib/theme';
 import { formatMinutes } from '@/lib/time';
 import type { AbilityId, GameMode, Player } from '@/lib/types';
@@ -29,6 +30,7 @@ export function Lobby({ data }: { data: GameData }) {
   const { game, players, isHost, userId } = data;
   const [busy, setBusy] = useState<string | null>(null);
   const [tracking, setTracking] = useState<TrackingMode | null>(null);
+  const now = useServerNow(data.offsetMs, 60_000);
   if (!game) return null;
 
   const hunters = players.filter((p) => p.role === 'hunter');
@@ -71,6 +73,13 @@ export function Lobby({ data }: { data: GameData }) {
       }
     });
 
+  const me = players.find((p) => p.user_id === userId) ?? null;
+  const unconfirmed = players.filter((p) => !p.rules_accepted_at);
+  const center = area
+    ? { lat: area.reduce((s, p) => s + p.lat, 0) / area.length, lng: area.reduce((s, p) => s + p.lng, 0) / area.length }
+    : null;
+  const night = center ? nightNotice(now, now + (game.headstart_sec + game.duration_sec) * 1000, center) : null;
+
   const runnerAbilitiesOn = game.abilities.some((a) => ABILITIES[a].role === 'runner');
   let spotsText: string;
   if (!game.checkpoints_enabled) spotsText = 'Aus: In dieser Runde gibt es keine toten Briefkästen.';
@@ -89,11 +98,17 @@ export function Lobby({ data }: { data: GameData }) {
   if (!area) missing.push('Einsatzgebiet zeichnen');
   if (players.length < 2) missing.push('mindestens 2 Spieler');
   if (players.length >= 2 && runners.length === 0) missing.push('mindestens 1 Agent');
+  if (unconfirmed.length > 0)
+    missing.push(
+      unconfirmed.length === 1
+        ? `${unconfirmed[0].user_id === userId ? 'du musst' : `${unconfirmed[0].name} muss`} die Sicherheitsregeln bestätigen`
+        : `${unconfirmed.length} Spieler müssen die Sicherheitsregeln bestätigen`,
+    );
 
   const start = () => {
     Alert.alert(
       'Einsatz starten?',
-      'Erinnere alle an die Regeln: nicht auf Straßen, Gleise oder Privatgelände laufen und auf den Verkehr achten.' +
+      'Alle haben die Sicherheitsregeln bestätigt. Im Notfall beendet der SOS-Knopf die Runde sofort für alle.' +
         (hunters.length === 0 ? '\n\nNoch kein Jäger gewählt: Die App bestimmt einen zufällig.' : ''),
       [
         { text: 'Abbrechen', style: 'cancel' },
@@ -157,6 +172,9 @@ export function Lobby({ data }: { data: GameData }) {
               {p.name}
               {p.user_id === userId ? '  (du)' : ''}
               {p.user_id === game.host_id ? '  ★' : ''}
+            </T>
+            <T variant="muted" style={{ fontSize: 12 }}>
+              {p.rules_accepted_at ? 'Regeln ✓' : 'Regeln offen'}
             </T>
             <Badge label={roleLabel[p.role]} color={p.role === 'hunter' ? colors.hunter : colors.signal} />
           </Pressable>
@@ -324,7 +342,34 @@ export function Lobby({ data }: { data: GameData }) {
         <T variant="muted">• Auf den Verkehr achten. Kein Spiel ist es wert, angefahren zu werden.</T>
         <T variant="muted">• Im Dunkeln an beleuchteten Orten bleiben.</T>
         <T variant="muted">• Im Notfall beendet der SOS-Knopf die Runde sofort für alle.</T>
+        {me?.rules_accepted_at ? (
+          <Banner text="Du hast die Regeln für diese Runde bestätigt." color={colors.signal} />
+        ) : (
+          <Button
+            title="Gelesen, ich halte mich daran"
+            onPress={() => void run('rules', () => api.acceptRules(game.id))}
+            loading={busy === 'rules'}
+            disabled={busy !== null}
+          />
+        )}
+        <T variant="muted">Vor jeder Runde bestätigt jeder die Regeln. Erst dann kann der Host starten.</T>
       </Card>
+
+      {night ? (
+        <Card accent={colors.warning}>
+          <T variant="label" color={colors.warning}>
+            Nachtmodus
+          </T>
+          <T>
+            {night.kind === 'dark'
+              ? 'Im Einsatzgebiet ist es schon dunkel.'
+              : `Die Sonne geht um ${formatClock(night.sunset)} Uhr unter, noch während der Runde.`}
+          </T>
+          <T variant="muted">• Bleibt an beleuchteten Orten und meidet dunkle Parks und Wege.</T>
+          <T variant="muted">• Tragt etwas Helles oder Reflektierendes, damit Autos und Radfahrer euch sehen.</T>
+          <T variant="muted">• Überlegt, ob ihr das Einsatzgebiet kleiner macht oder die Runde verkürzt.</T>
+        </Card>
+      ) : null}
 
       {isHost ? (
         <View style={{ gap: space.sm }}>
