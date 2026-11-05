@@ -37,6 +37,12 @@ Das vollständige Spielkonzept steht im Konzept-Dokument (Claude Docs).
 - Anonyme Nutzer, die 30 Tage lang nicht gespielt haben, löscht der Server jede Nacht automatisch.
 - Bevor die App nach dem Standort fragt, erklärt ein deutlicher Hinweis, wofür (verlangt Google Play für den Standort im Hintergrund).
 
+## Sicherheit
+
+- Vor jeder Runde bestätigt jeder Spieler in der Lobby die Sicherheitsregeln (nicht auf Straßen, Gleise oder Privatgelände, auf den Verkehr achten). Erst dann kann der Host starten.
+- Nachtmodus: Ist es im Einsatzgebiet dunkel oder geht die Sonne während der Runde unter, zeigt die Lobby Hinweise (beleuchtete Orte, helle Kleidung). Sonnenauf- und -untergang berechnet die App selbst (`src/lib/sun.ts`).
+- SOS-Knopf: beendet die Runde sofort für alle.
+
 ## Aufbau
 
 | Ordner | Inhalt |

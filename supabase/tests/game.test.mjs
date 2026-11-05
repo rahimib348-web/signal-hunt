@@ -164,7 +164,13 @@ async function setupGame({ mode = 'infection', runners = 3 } = {}) {
   await rpc(host, 'update_settings', { p_game: gameId, p_mode: mode, p_headstart_sec: 300, p_duration_sec: 2700 });
   await rpc(host, 'set_area', { p_game: gameId, p_points: AREA });
   await rpc(host, 'set_role', { p_game: gameId, p_user: host.id, p_role: 'hunter' });
+  await acceptRules(gameId, [host, ...others]);
   return { host, hunter: host, runners: others, gameId, code: game.code };
+}
+
+// Vor jeder Runde bestätigt jeder die Sicherheitsregeln.
+async function acceptRules(gameId, people) {
+  for (const p of people) await rpc(p, 'accept_rules', { p_game: gameId });
 }
 
 test('Lobby: beitreten, Einstellungen nur durch den Host, Spielfeld prüfen', async () => {
@@ -436,8 +442,10 @@ test('Neue Runde: Host setzt ein beendetes Spiel zurück in die Lobby', async ()
   const { data: pos } = await runners[0].client.from('positions').select('*').eq('game_id', gameId);
   assert.deepEqual(pos, []);
 
-  // Neue Runde lässt sich wieder starten.
+  // Neue Runde lässt sich wieder starten, aber erst, wenn alle die Regeln neu bestätigt haben.
   await rpc(hunter, 'set_role', { p_game: gameId, p_user: hunter.id, p_role: 'hunter' });
+  assert.equal(await rpcError(hunter, 'start_game', { p_game: gameId }), 'rules_not_accepted');
+  await acceptRules(gameId, [hunter, ...runners]);
   await rpc(hunter, 'start_game', { p_game: gameId });
   const state = await rpc(runners[0], 'tick', { p_game: gameId });
   assert.equal(state.status, 'headstart');
@@ -927,4 +935,29 @@ test('Anonyme Nutzer werden nach 30 Tagen ohne Nutzung gelöscht', async () => {
   assert.equal(await userExists(busy.id), true, 'Wer in einem Einsatz ist, bleibt');
   const { rows: jobs } = await db.query(`select jobname from cron.job where jobname = 'signal-hunt-inactive-users'`);
   assert.equal(jobs.length, 1);
+});
+
+test('Sicherheitsregeln: Start erst, wenn alle bestätigt haben', async () => {
+  const host = await player('Host');
+  const a = await player('Agent');
+  const gameId = await rpc(host, 'create_game', { p_name: host.name });
+  const { data: game } = await host.client.from('games').select('code').eq('id', gameId).single();
+  await rpc(a, 'join_game', { p_code: game.code, p_name: a.name });
+  await rpc(host, 'set_area', { p_game: gameId, p_points: AREA });
+
+  assert.equal(await rpcError(host, 'start_game', { p_game: gameId }), 'rules_not_accepted');
+  await rpc(host, 'accept_rules', { p_game: gameId });
+  assert.equal(await rpcError(host, 'start_game', { p_game: gameId }), 'rules_not_accepted', 'Auch der Agent muss bestätigen');
+
+  // Alle sehen, wer schon bestätigt hat.
+  const { data: list } = await a.client.from('players').select('user_id, rules_accepted_at').eq('game_id', gameId);
+  assert.equal(list.find((p) => p.user_id === host.id).rules_accepted_at !== null, true);
+  assert.equal(list.find((p) => p.user_id === a.id).rules_accepted_at, null);
+
+  const stranger = await player('Fremder');
+  assert.equal(await rpcError(stranger, 'accept_rules', { p_game: gameId }), 'not_member');
+
+  await rpc(a, 'accept_rules', { p_game: gameId });
+  await rpc(host, 'start_game', { p_game: gameId });
+  assert.equal(await rpcError(a, 'accept_rules', { p_game: gameId }), 'wrong_status', 'Nur in der Lobby');
 });

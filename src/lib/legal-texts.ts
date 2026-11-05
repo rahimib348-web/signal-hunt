@@ -73,7 +73,7 @@ export const PRIVACY: LegalSection[] = [
           },
           { what: 'Agentenname', why: 'Anzeige im Spiel', who: 'Mitspieler im selben Einsatz', until: 'Mit dem Spiel' },
           {
-            what: 'Einsatz: Code, Einstellungen, Einsatzgebiet, Rollen, Ergebnis',
+            what: 'Einsatz: Code, Einstellungen, Einsatzgebiet, Rollen, bestätigte Sicherheitsregeln, Ergebnis',
             why: 'Ablauf der Runde',
             who: 'Mitspieler im selben Einsatz',
             until: 'Mit dem Spiel',

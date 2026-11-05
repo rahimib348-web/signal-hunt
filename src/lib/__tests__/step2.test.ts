@@ -225,3 +225,38 @@ describe('Datenschutz', () => {
     expect(hasPlaceholders()).toBe(true); // bis Name und Adresse eingetragen sind
   });
 });
+
+describe('Nachtmodus', () => {
+  const berlin = { lat: 52.52, lng: 13.405 };
+  const near = (actual: Date | null, iso: string) => {
+    expect(actual).not.toBeNull();
+    expect(Math.abs(actual!.getTime() - Date.parse(iso))).toBeLessThan(4 * 60_000);
+  };
+
+  it('berechnet Sonnenauf- und -untergang auf wenige Minuten genau', async () => {
+    const { sunTimes } = await import('../sun');
+    const summer = sunTimes(Date.parse('2024-06-21T12:00:00Z'), berlin);
+    near(summer.sunrise, '2024-06-21T02:43:00Z'); // 04:43 Sommerzeit
+    near(summer.sunset, '2024-06-21T19:33:00Z'); // 21:33 Sommerzeit
+    const winter = sunTimes(Date.parse('2024-12-21T12:00:00Z'), berlin);
+    near(winter.sunrise, '2024-12-21T07:15:00Z'); // 08:15 Winterzeit
+    near(winter.sunset, '2024-12-21T14:54:00Z'); // 15:54 Winterzeit
+  });
+
+  it('kennt Polarnacht und Polartag', async () => {
+    const { sunTimes, isDark } = await import('../sun');
+    const tromso = { lat: 69.6492, lng: 18.9553 };
+    expect(sunTimes(Date.parse('2024-12-21T12:00:00Z'), tromso).alwaysUp).toBe(false);
+    expect(isDark(Date.parse('2024-12-21T12:00:00Z'), tromso)).toBe(true);
+    expect(isDark(Date.parse('2024-06-21T00:00:00Z'), tromso)).toBe(false);
+  });
+
+  it('warnt, wenn es dunkel ist oder während der Runde dunkel wird', async () => {
+    const { nightNotice } = await import('../sun');
+    const at = (t: string) => Date.parse(`2026-11-04T${t}:00Z`);
+    expect(nightNotice(at('10:00'), at('11:00'), berlin)).toBeNull();
+    expect(nightNotice(at('19:00'), at('20:00'), berlin)).toEqual({ kind: 'dark' });
+    const dusk = nightNotice(at('15:00'), at('16:00'), berlin);
+    expect(dusk?.kind).toBe('sunset_during_round');
+  });
+});

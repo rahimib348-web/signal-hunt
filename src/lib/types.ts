@@ -42,6 +42,8 @@ export type Player = {
   joined_at: string;
   caught_at: string | null;
   caught_by: string | null;
+  /** Wann der Spieler die Sicherheitsregeln für diese Runde bestätigt hat. */
+  rules_accepted_at: string | null;
 };
 
 export type Position = {
